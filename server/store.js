@@ -1,25 +1,105 @@
-// MongoDB-backed data store using Mongoose models
-const User = require('./models/User');
-const Match = require('./models/Match');
-const Activity = require('./models/Activity');
+// PostgreSQL-backed data store
+const { pool } = require('./db');
+const { v4: uuidv4 } = require('uuid');
+
+function newId() {
+  return uuidv4();
+}
+
+function transformUser(row) {
+  if (!row) return null;
+  return {
+    _id: row.id,
+    name: row.name,
+    email: row.email,
+    password: row.password,
+    age: row.age,
+    bio: row.bio,
+    location: row.location,
+    socialScreenshots: row.social_screenshots || [],
+    interests: row.interests || [],
+    vibeProfile: row.vibe_profile,
+    createdAt: row.created_at
+  };
+}
+
+function transformMatch(row) {
+  if (!row) return null;
+  return {
+    _id: row.id,
+    users: row.users || [],
+    vibeScore: row.vibe_score,
+    sharedInterests: row.shared_interests || [],
+    status: row.status,
+    initiatedBy: row.initiated_by,
+    matchedAt: row.matched_at
+  };
+}
+
+function transformActivity(row) {
+  if (!row) return null;
+  return {
+    _id: row.id,
+    title: row.title,
+    category: row.category,
+    description: row.description,
+    date: row.date,
+    location: row.location,
+    maxParticipants: row.max_participants,
+    participants: row.participants || [],
+    createdBy: row.created_by,
+    imageUrl: row.image_url,
+    createdAt: row.created_at
+  };
+}
 
 const store = {
   // ---- Users ----
   async findUser(query) {
-    return User.findOne(query).lean();
+    let result;
+    if (query.email) {
+      result = await pool.query('SELECT * FROM users WHERE email = $1', [query.email]);
+    } else if (query._id) {
+      result = await pool.query('SELECT * FROM users WHERE id = $1', [query._id]);
+    } else {
+      return null;
+    }
+    return transformUser(result.rows[0]);
   },
 
   async findUserById(id) {
-    return User.findById(id).lean();
+    const result = await pool.query('SELECT * FROM users WHERE id = $1', [id]);
+    return transformUser(result.rows[0]);
   },
 
   async createUser({ name, email, password, age }) {
-    const user = await User.create({ name, email, password, age });
-    return user.toObject();
+    const id = newId();
+    const result = await pool.query(
+      'INSERT INTO users (id, name, email, password, age) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+      [id, name, email, password, age]
+    );
+    return transformUser(result.rows[0]);
   },
 
   async updateUser(id, updates) {
-    return User.findByIdAndUpdate(id, updates, { new: true }).lean();
+    const fields = [];
+    const values = [];
+    let idx = 1;
+
+    if (updates.bio !== undefined) { fields.push(`bio = $${idx++}`); values.push(updates.bio); }
+    if (updates.location !== undefined) { fields.push(`location = $${idx++}`); values.push(updates.location); }
+    if (updates.interests !== undefined) { fields.push(`interests = $${idx++}`); values.push(JSON.stringify(updates.interests)); }
+    if (updates.vibeProfile !== undefined) { fields.push(`vibe_profile = $${idx++}`); values.push(JSON.stringify(updates.vibeProfile)); }
+    if (updates.socialScreenshots !== undefined) { fields.push(`social_screenshots = $${idx++}`); values.push(JSON.stringify(updates.socialScreenshots)); }
+
+    if (fields.length === 0) return this.findUserById(id);
+
+    values.push(id);
+    const result = await pool.query(
+      `UPDATE users SET ${fields.join(', ')} WHERE id = $${idx} RETURNING *`,
+      values
+    );
+    return transformUser(result.rows[0]);
   },
 
   sanitize(user) {
@@ -35,42 +115,95 @@ const store = {
   },
 
   async findUsers(filter = {}) {
-    const query = {};
-    const excludeIds = [];
+    const conditions = [];
+    const values = [];
+    let idx = 1;
 
-    if (filter.excludeId) excludeIds.push(filter.excludeId);
-    if (filter.excludeIds) excludeIds.push(...filter.excludeIds);
-    if (excludeIds.length > 0) query._id = { $nin: excludeIds };
-    if (filter.hasScreenshots) query['socialScreenshots.0'] = { $exists: true };
+    if (filter.excludeId) {
+      conditions.push(`id != $${idx++}`);
+      values.push(filter.excludeId);
+    }
+    if (filter.excludeIds && filter.excludeIds.length > 0) {
+      conditions.push(`NOT (id = ANY($${idx++}::text[]))`);
+      values.push(filter.excludeIds);
+    }
+    if (filter.hasScreenshots) {
+      conditions.push(`social_screenshots != '[]'::jsonb`);
+    }
 
-    let q = User.find(query);
-    if (filter.limit) q = q.limit(filter.limit);
-    return q.lean();
+    let sql = 'SELECT * FROM users';
+    if (conditions.length > 0) sql += ' WHERE ' + conditions.join(' AND ');
+    if (filter.limit) { sql += ` LIMIT $${idx++}`; values.push(filter.limit); }
+
+    const result = await pool.query(sql, values);
+    return result.rows.map(transformUser);
   },
 
   // ---- Matches ----
   async findMatch(query) {
-    if (query.users) {
-      return Match.findOne({ users: { $all: query.users } }).lean();
+    let result;
+    if (query._id) {
+      result = await pool.query('SELECT * FROM matches WHERE id = $1', [query._id]);
+    } else if (query.users) {
+      result = await pool.query(
+        'SELECT * FROM matches WHERE users @> $1::jsonb',
+        [JSON.stringify(query.users)]
+      );
+    } else {
+      return null;
     }
-    return Match.findOne(query).lean();
+    return transformMatch(result.rows[0]);
   },
 
   async createMatch({ users, vibeScore, sharedInterests, initiatedBy }) {
-    const match = await Match.create({ users, vibeScore, sharedInterests, initiatedBy });
-    return match.toObject();
+    const id = newId();
+    const result = await pool.query(
+      'INSERT INTO matches (id, users, vibe_score, shared_interests, initiated_by) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+      [id, JSON.stringify(users), vibeScore, JSON.stringify(sharedInterests), initiatedBy]
+    );
+    return transformMatch(result.rows[0]);
   },
 
   async updateMatch(id, updates) {
-    return Match.findByIdAndUpdate(id, updates, { new: true }).lean();
+    const fields = [];
+    const values = [];
+    let idx = 1;
+
+    if (updates.status) { fields.push(`status = $${idx++}`); values.push(updates.status); }
+
+    if (fields.length === 0) return this.findMatch({ _id: id });
+
+    values.push(id);
+    const result = await pool.query(
+      `UPDATE matches SET ${fields.join(', ')} WHERE id = $${idx} RETURNING *`,
+      values
+    );
+    return transformMatch(result.rows[0]);
   },
 
   async findMatches(filter = {}) {
-    const query = {};
-    if (filter.userId) query.users = filter.userId;
-    if (filter.status) query.status = filter.status;
-    if (filter.notInitiatedBy) query.initiatedBy = { $ne: filter.notInitiatedBy };
-    return Match.find(query).lean();
+    const conditions = [];
+    const values = [];
+    let idx = 1;
+
+    if (filter.userId) {
+      conditions.push(`users @> $${idx++}::jsonb`);
+      values.push(JSON.stringify([filter.userId]));
+    }
+    if (filter.status) {
+      conditions.push(`status = $${idx++}`);
+      values.push(filter.status);
+    }
+    if (filter.notInitiatedBy) {
+      conditions.push(`initiated_by != $${idx++}`);
+      values.push(filter.notInitiatedBy);
+    }
+
+    let sql = 'SELECT * FROM matches';
+    if (conditions.length > 0) sql += ' WHERE ' + conditions.join(' AND ');
+
+    const result = await pool.query(sql, values);
+    return result.rows.map(transformMatch);
   },
 
   async populateMatch(match) {
@@ -85,29 +218,41 @@ const store = {
 
   // ---- Activities ----
   async createActivity(data) {
-    const activity = await Activity.create({
-      title: data.title,
-      category: data.category,
-      description: data.description,
-      date: new Date(data.date),
-      location: data.location,
-      maxParticipants: data.maxParticipants || 10,
-      participants: data.participants || [],
-      createdBy: data.createdBy,
-      imageUrl: data.imageUrl || ''
-    });
-    return activity.toObject();
+    const id = newId();
+    const result = await pool.query(
+      `INSERT INTO activities (id, title, category, description, date, location, max_participants, participants, created_by, image_url)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+      [id, data.title, data.category, data.description, new Date(data.date), data.location,
+       data.maxParticipants || 10, JSON.stringify(data.participants || []), data.createdBy, data.imageUrl || '']
+    );
+    return transformActivity(result.rows[0]);
   },
 
   async findActivities(filter = {}) {
-    const query = {};
-    if (filter.upcoming) query.date = { $gte: new Date() };
-    if (filter.category) query.category = filter.category;
-    return Activity.find(query).sort({ date: 1 }).lean();
+    const conditions = [];
+    const values = [];
+    let idx = 1;
+
+    if (filter.upcoming) {
+      conditions.push(`date >= $${idx++}`);
+      values.push(new Date());
+    }
+    if (filter.category) {
+      conditions.push(`category = $${idx++}`);
+      values.push(filter.category);
+    }
+
+    let sql = 'SELECT * FROM activities';
+    if (conditions.length > 0) sql += ' WHERE ' + conditions.join(' AND ');
+    sql += ' ORDER BY date ASC';
+
+    const result = await pool.query(sql, values);
+    return result.rows.map(transformActivity);
   },
 
   async findActivityById(id) {
-    return Activity.findById(id).lean();
+    const result = await pool.query('SELECT * FROM activities WHERE id = $1', [id]);
+    return transformActivity(result.rows[0]);
   },
 
   async populateActivity(activity) {
@@ -126,35 +271,39 @@ const store = {
   },
 
   async joinActivity(activityId, userId) {
-    return Activity.findByIdAndUpdate(
-      activityId,
-      { $addToSet: { participants: userId } },
-      { new: true }
-    ).lean();
+    const activity = await this.findActivityById(activityId);
+    if (!activity) return null;
+    const participants = [...activity.participants, userId];
+    const result = await pool.query(
+      'UPDATE activities SET participants = $1 WHERE id = $2 RETURNING *',
+      [JSON.stringify(participants), activityId]
+    );
+    return transformActivity(result.rows[0]);
   },
 
   async leaveActivity(activityId, userId) {
-    return Activity.findByIdAndUpdate(
-      activityId,
-      { $pull: { participants: userId } },
-      { new: true }
-    ).lean();
+    const activity = await this.findActivityById(activityId);
+    if (!activity) return null;
+    const participants = activity.participants.filter(p => p !== userId);
+    const result = await pool.query(
+      'UPDATE activities SET participants = $1 WHERE id = $2 RETURNING *',
+      [JSON.stringify(participants), activityId]
+    );
+    return transformActivity(result.rows[0]);
   },
 
   async addScreenshot(userId, screenshot) {
-    return User.findByIdAndUpdate(
-      userId,
-      { $push: { socialScreenshots: screenshot } },
-      { new: true }
-    ).lean();
+    const user = await this.findUserById(userId);
+    if (!user) return null;
+    const screenshots = [...user.socialScreenshots, { ...screenshot, _id: newId() }];
+    return this.updateUser(userId, { socialScreenshots: screenshots });
   },
 
   async removeScreenshot(userId, screenshotId) {
-    return User.findByIdAndUpdate(
-      userId,
-      { $pull: { socialScreenshots: { _id: screenshotId } } },
-      { new: true }
-    ).lean();
+    const user = await this.findUserById(userId);
+    if (!user) return null;
+    const screenshots = user.socialScreenshots.filter(s => s._id !== screenshotId);
+    return this.updateUser(userId, { socialScreenshots: screenshots });
   }
 };
 

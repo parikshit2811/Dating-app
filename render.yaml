@@ -1,7 +1,13 @@
+databases:
+  - name: vibematch-db
+    plan: free
+    databaseName: vibematch
+
 services:
   - type: web
     name: vibe-match-dating
     runtime: node
+    plan: free
     buildCommand: npm install && npm run build
     startCommand: npm start
     envVars:
@@ -9,5 +15,7 @@ services:
         value: production
       - key: JWT_SECRET
         generateValue: true
-      - key: MONGO_URI
-        sync: false
+      - key: DATABASE_URL
+        fromDatabase:
+          name: vibematch-db
+          property: connectionString
