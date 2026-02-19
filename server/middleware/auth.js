@@ -6,7 +6,7 @@ module.exports = function(req, res, next) {
 
   const token = header.startsWith('Bearer ') ? header.slice(7) : header;
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'dev_secret');
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'vibematch_dev_secret');
     req.user = decoded;
     next();
   } catch (err) {
