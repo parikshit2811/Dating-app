@@ -8,4 +8,6 @@ services:
       - key: NODE_ENV
         value: production
       - key: JWT_SECRET
-        value: vibematch-secret-key-2024
+        generateValue: true
+      - key: MONGO_URI
+        sync: false

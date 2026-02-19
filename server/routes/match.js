@@ -33,14 +33,14 @@ function calculateVibeScore(userA, userB) {
 }
 
 // Discover potential matches
-router.get('/discover', auth, (req, res) => {
-  const currentUser = store.findUserById(req.user.id);
+router.get('/discover', auth, async (req, res) => {
+  const currentUser = await store.findUserById(req.user.id);
   if (!currentUser) return res.status(404).json({ msg: 'User not found' });
 
-  const existingMatches = store.findMatches({ userId: req.user.id });
-  const matchedUserIds = existingMatches.flatMap(m => m.users).filter(id => id !== req.user.id);
+  const existingMatches = await store.findMatches({ userId: req.user.id });
+  const matchedUserIds = existingMatches.flatMap(m => m.users.map(u => u.toString())).filter(id => id !== req.user.id);
 
-  const candidates = store.findUsers({
+  const candidates = await store.findUsers({
     excludeId: req.user.id,
     excludeIds: matchedUserIds,
     hasScreenshots: true,
@@ -60,17 +60,17 @@ router.get('/discover', auth, (req, res) => {
 });
 
 // Send a vibe match request
-router.post('/request/:userId', auth, (req, res) => {
-  const existing = store.findMatch({ users: [req.user.id, req.params.userId] });
+router.post('/request/:userId', auth, async (req, res) => {
+  const existing = await store.findMatch({ users: [req.user.id, req.params.userId] });
   if (existing) return res.status(400).json({ msg: 'Match already exists' });
 
-  const userA = store.findUserById(req.user.id);
-  const userB = store.findUserById(req.params.userId);
+  const userA = await store.findUserById(req.user.id);
+  const userB = await store.findUserById(req.params.userId);
   if (!userB) return res.status(404).json({ msg: 'User not found' });
 
   const { score, sharedInterests } = calculateVibeScore(userA, userB);
 
-  const match = store.createMatch({
+  const match = await store.createMatch({
     users: [req.user.id, req.params.userId],
     vibeScore: score,
     sharedInterests,
@@ -81,36 +81,38 @@ router.post('/request/:userId', auth, (req, res) => {
 });
 
 // Accept / decline match
-router.put('/:matchId', auth, (req, res) => {
+router.put('/:matchId', auth, async (req, res) => {
   const { status } = req.body;
   if (!['accepted', 'declined'].includes(status)) {
     return res.status(400).json({ msg: 'Status must be accepted or declined' });
   }
 
-  const match = store.findMatch({ _id: req.params.matchId });
+  const match = await store.findMatch({ _id: req.params.matchId });
   if (!match) return res.status(404).json({ msg: 'Match not found' });
-  if (!match.users.includes(req.user.id)) {
+  if (!match.users.map(u => u.toString()).includes(req.user.id)) {
     return res.status(403).json({ msg: 'Not authorized' });
   }
 
-  store.updateMatch(req.params.matchId, { status });
-  res.json(match);
+  const updated = await store.updateMatch(req.params.matchId, { status });
+  res.json(updated);
 });
 
 // Get accepted matches
-router.get('/', auth, (req, res) => {
-  const matches = store.findMatches({ userId: req.user.id, status: 'accepted' });
-  res.json(matches.map(m => store.populateMatch(m)));
+router.get('/', auth, async (req, res) => {
+  const matches = await store.findMatches({ userId: req.user.id, status: 'accepted' });
+  const populated = await Promise.all(matches.map(m => store.populateMatch(m)));
+  res.json(populated);
 });
 
 // Get pending requests for me
-router.get('/pending', auth, (req, res) => {
-  const matches = store.findMatches({
+router.get('/pending', auth, async (req, res) => {
+  const matches = await store.findMatches({
     userId: req.user.id,
     status: 'pending',
     notInitiatedBy: req.user.id
   });
-  res.json(matches.map(m => store.populateMatch(m)));
+  const populated = await Promise.all(matches.map(m => store.populateMatch(m)));
+  res.json(populated);
 });
 
 module.exports = router;

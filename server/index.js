@@ -1,7 +1,7 @@
 const express = require('express');
+const mongoose = require('mongoose');
 const cors = require('cors');
 const path = require('path');
-const store = require('./store');
 
 const authRoutes = require('./routes/auth');
 const profileRoutes = require('./routes/profile');
@@ -27,11 +27,16 @@ app.get('*', (req, res) => {
 });
 
 const PORT = process.env.PORT || 5000;
+const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/vibematch';
 
-// Seed demo data then start
-store.seed().then(() => {
-  app.listen(PORT, () => {
-    console.log(`\nVibeMatch server running on http://localhost:${PORT}`);
-    console.log('In-memory store active (no database needed)\n');
+mongoose.connect(MONGO_URI)
+  .then(() => {
+    console.log('Connected to MongoDB');
+    app.listen(PORT, () => {
+      console.log(`\nVibeMatch server running on http://localhost:${PORT}`);
+    });
+  })
+  .catch(err => {
+    console.error('MongoDB connection error:', err.message);
+    process.exit(1);
   });
-});
